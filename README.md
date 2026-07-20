@@ -1,5 +1,4 @@
 # plivo-systems-MM24B056
-# Plivo Systems - The Flaky Network
 
 This repository contains my solution for the Systems assignment, **The Flaky Network**. The task is to move a live stream of 160-byte frames over an unreliable UDP relay that can drop, delay, reorder, and duplicate packets. A frame is counted only if the receiver delivers the exact payload to the harness player before its playout deadline.
 
