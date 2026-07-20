@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flaky Network Architecture Summary</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172026;
+      background: #f6f8fa;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 36px 24px 56px;
+    }
+    h1, h2 {
+      line-height: 1.15;
+      margin: 0 0 14px;
+    }
+    h1 {
+      font-size: 34px;
+    }
+    h2 {
+      font-size: 22px;
+      margin-top: 30px;
+    }
+    p {
+      margin: 0 0 14px;
+    }
+    .panel {
+      background: #ffffff;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      padding: 18px;
+      margin: 18px 0;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+      margin-top: 14px;
+    }
+    .node {
+      background: #eef6ff;
+      border: 1px solid #9cc7f0;
+      border-radius: 6px;
+      padding: 12px;
+      min-height: 78px;
+    }
+    .node strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+    code {
+      background: #edf2f7;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      background: #ffffff;
+    }
+    th, td {
+      border: 1px solid #d8dee4;
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #edf2f7;
+    }
+    ul {
+      padding-left: 22px;
+    }
+    @media (max-width: 760px) {
+      .flow {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>The Flaky Network: Submission Summary</h1>
+  <p>
+    The solution replaces the naive UDP pass-through with a compact forward-error-correction protocol.
+    It is designed for live 20 ms frames where waiting for retransmission would usually cost too much time.
+    The recommended grading delay is <code>--delay_ms 98</code>.
+  </p>
+
+  <section class="panel">
+    <h2>System Path</h2>
+    <p>
+      The harness source gives the sender one exact 160-byte payload every 20 ms. The sender is only allowed
+      to communicate with the receiver through the hostile relay, and the receiver must deliver exact
+      <code>seq + payload</code> frames to the harness player before each deadline.
+    </p>
+    <div class="flow">
+      <div class="node"><strong>Harness Source</strong>Emits frame <code>i</code> at <code>T0 + i*20ms</code>.</div>
+      <div class="node"><strong>Sender</strong>Encodes media and repair packets.</div>
+      <div class="node"><strong>Relay</strong>Drops, delays, reorders, and duplicates UDP packets.</div>
+      <div class="node"><strong>Receiver</strong>Buffers, repairs, and emits each frame once.</div>
+      <div class="node"><strong>Harness Player</strong>Scores correctness and deadline arrival.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Protocol Design</h2>
+    <p>
+      Relay-facing packets are 161 bytes: one compact control byte plus the 160-byte payload. The top two bits
+      of the control byte mark packet type, and the low 6 bits carry the frame sequence residue. The receiver
+      combines that residue with <code>T0</code> and current time to recover the absolute sequence number; the
+      provided delays are far smaller than the 64-frame wrap window.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Packet</th><th>Payload</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Data</td>
+          <td>Frame bytes for sequence <code>i</code></td>
+          <td>Normal delivery path for every frame.</td>
+        </tr>
+        <tr>
+          <td>Adjacent XOR repair</td>
+          <td><code>payload[i] XOR payload[i+1]</code> for an even/odd pair</td>
+          <td>Recovers either frame if exactly one of the pair's data packets is lost.</td>
+        </tr>
+        <tr>
+          <td>Diagonal XOR repair</td>
+          <td><code>payload[i-3] XOR payload[i]</code> for most odd <code>i</code></td>
+          <td>Adds another local equation so clustered losses are recoverable more often.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Bandwidth Strategy</h2>
+    <p>
+      Every frame is sent once. Each two-frame pair gets one adjacent repair packet, and most pairs also get
+      a diagonal repair packet. To stay under the strict 2.0x byte cap, the sender skips the diagonal repair
+      every 32nd pair. On 30-second runs this produced 479136 relay bytes for 1500 frames, or about 1.996x
+      raw payload overhead.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Receiver Behavior</h2>
+    <ul>
+      <li>Store received data frames by absolute sequence number.</li>
+      <li>Store adjacent and diagonal XOR equations near each frame.</li>
+      <li>When an equation has one known frame and one missing frame, reconstruct the missing frame with XOR.</li>
+      <li>Run a few local repair passes because one recovered frame can unlock another equation.</li>
+      <li>Send each available frame to the player immediately, and never emit the same sequence twice.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Why Not Retransmission</h2>
+    <p>
+      Retransmission needs a receiver request and a sender reply, and both packets cross the same hostile relay.
+      At low playout delays, that round trip is usually too late. Forward repair is sent before a loss is known,
+      which spends bandwidth but keeps recovery one frame away instead of one network round trip away.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Observed Result</h2>
+    <p>
+      The final design passed the visible moderate profile at <code>98 ms</code> across tested seeds, including seeds
+      where <code>97 ms</code> and <code>90 ms</code> failed. The main remaining failure mode is losing or late-delivering too many
+      related data and repair packets in the same local equation graph.
+    </p>
+  </section>
+</main>
+</body>
+</html>
